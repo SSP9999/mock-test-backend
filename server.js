@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 5000;
 // For Vercel deployment - export the app
 module.exports = app;
 const JWT_SECRET = 'your-secret-key';
+const EXTERNAL_JWT_SECRET = 'external-secret-key';
 
 // Middleware
 app.use(cors());
@@ -187,6 +188,68 @@ app.post('/api/login', async (req, res) => {
       user: { id: user.id, name: user.name, email: user.email }
     });
   } catch (error) {
+    res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// SSO Login/Signup
+app.get('/api/sso', async (req, res) => {
+  try {
+    const externalToken = req.query['X-External-Token'];
+
+    if (!externalToken) {
+      return res.status(400).json({ message: 'External token is required' });
+    }
+
+    // Verify the external token
+    let decoded;
+    try {
+      // In production, you should use a proper secret and possibly specify algorithms
+      decoded = jwt.verify(externalToken, EXTERNAL_JWT_SECRET);
+    } catch (err) {
+      return res.status(401).json({
+        message: 'Invalid or expired external token',
+        error: err.message
+      });
+    }
+
+    const { username, email: tokenEmail, sub } = decoded;
+    // Use email from token, or username, or sub as unique identifier
+    const identifier = tokenEmail || username || sub;
+
+    if (!identifier) {
+      return res.status(400).json({ message: 'Token does not contain user identification (email, username or sub)' });
+    }
+
+    // Find or create user
+    // We check both email and name for match
+    let user = users.find(u => u.email === identifier || u.name === identifier);
+
+    if (!user) {
+      // Create new user for SSO if they don't exist
+      const randomPassword = Math.random().toString(36).slice(-10);
+      const hashedPassword = await bcrypt.hash(randomPassword, 10);
+
+      user = {
+        id: users.length + 1,
+        name: username || identifier.toString(),
+        email: tokenEmail || (identifier.toString().includes('@') ? identifier.toString() : `${identifier}@sso.com`),
+        password: hashedPassword,
+        isSSO: true
+      };
+      users.push(user);
+    }
+
+    // Generate local JWT token for our application
+    const token = jwt.sign({ id: user.id, email: user.email }, JWT_SECRET, { expiresIn: '24h' });
+
+    res.json({
+      message: 'SSO Login successful',
+      token,
+      user: { id: user.id, name: user.name, email: user.email }
+    });
+  } catch (error) {
+    console.error('SSO Error:', error);
     res.status(500).json({ message: 'Server error' });
   }
 });
